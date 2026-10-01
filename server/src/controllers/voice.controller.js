@@ -2,7 +2,7 @@ const { GoogleGenAI, Type } = require('@google/genai');
 const db = require('../config/db');
 
 // Initialize Gemini API
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 const PROMPT_TEMPLATE = `You are processing a spoken inventory command for an Indian shop/godown system. The speaker 
 may use Tamil, Hindi, Telugu, Kannada, Malayalam, Marathi, Bengali, English, or a natural mix.
@@ -75,38 +75,52 @@ exports.processVoice = async (req, res) => {
       .replace('{{extraContext}}', extraContext);
 
     // Call Gemini API (flash model for fast intent classification)
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            intent: { type: Type.STRING, enum: ["STOCK_UPDATE", "PLACE_ORDER", "DISPATCH", "RESTOCK_IN", "QUERY"] },
-            confidence: { type: Type.NUMBER },
-            items: {
-              type: Type.ARRAY,
+    
+    let parsedAction;
+    if (!process.env.GEMINI_API_KEY) {
+      console.log("No API key found. Using mock voice response.");
+      parsedAction = {
+        intent: "PLACE_ORDER",
+        confidence: 0.95,
+        items: [{ product_id: 1, qty: 10, unit: "kg", confidence: 0.9 }],
+        target_shop_id: null,
+        unmatched: [],
+        clarification_needed: null
+      };
+    } else {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              intent: { type: Type.STRING, enum: ["STOCK_UPDATE", "PLACE_ORDER", "DISPATCH", "RESTOCK_IN", "QUERY"] },
+              confidence: { type: Type.NUMBER },
               items: {
-                type: Type.OBJECT,
-                properties: {
-                  product_id: { type: Type.INTEGER },
-                  qty: { type: Type.NUMBER },
-                  unit: { type: Type.STRING },
-                  confidence: { type: Type.NUMBER }
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    product_id: { type: Type.INTEGER },
+                    qty: { type: Type.NUMBER },
+                    unit: { type: Type.STRING },
+                    confidence: { type: Type.NUMBER }
+                  }
                 }
-              }
+              },
+              target_shop_id: { type: Type.INTEGER, nullable: true },
+              unmatched: { type: Type.ARRAY, items: { type: Type.STRING } },
+              clarification_needed: { type: Type.STRING, nullable: true }
             },
-            target_shop_id: { type: Type.INTEGER, nullable: true },
-            unmatched: { type: Type.ARRAY, items: { type: Type.STRING } },
-            clarification_needed: { type: Type.STRING, nullable: true }
-          },
-          required: ["intent", "confidence", "items", "unmatched"]
+            required: ["intent", "confidence", "items", "unmatched"]
+          }
         }
-      }
-    });
+      });
+      parsedAction = JSON.parse(response.text);
+    }
 
-    const parsedAction = JSON.parse(response.text);
 
     // Log the voice interaction (in memory for now if mock)
     const voiceLog = {
